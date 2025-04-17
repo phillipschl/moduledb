@@ -201,6 +201,22 @@ python main.py --uniref90 uniref90.fasta \
     --annotations_tsv results/final_cat_modules_annotations.tsv
 ```
 
+### 6. Running With Pfam-A.hmm Validation
+
+Validate identified modules against the Pfam-A.hmm database to ensure they contain the expected domains:
+
+```bash
+python main.py --uniref90 uniref90.fasta \
+    --pfam_hmm /path/to/Pfam-A.hmm \
+    --config config.yaml
+```
+
+This will:
+- Run the standard pipeline
+- Additionally validate extracted modules against Pfam-A.hmm
+- Filter out modules that don't contain legitimate C-A-T domains according to Pfam
+- Provide detailed statistics on how many modules pass Pfam validation
+
 ## Pipeline Phases
 
 1. **Setup, Seed Data Acquisition, and Seed Alignment**

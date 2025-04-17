@@ -5,7 +5,117 @@ Contains functions for validating domain order and continuity.
 """
 
 import logging
+import os
+import tempfile
 from typing import List, Tuple, Dict, Any, Optional, Union
+from scripts.alignment import run_hmmscan
+
+def validate_domains_with_pfam(
+    sequences: Dict[str, str], 
+    pfam_hmm_path: str, 
+    e_value_threshold: float = 1e-10,
+    cpu: int = 4,
+    temp_dir: Optional[str] = None
+) -> Dict[str, List[Dict[str, Any]]]:
+    """
+    Validate protein sequences against Pfam-A.hmm database to identify domains.
+    
+    Args:
+        sequences: Dictionary mapping sequence IDs to their sequences.
+        pfam_hmm_path: Path to the Pfam-A.hmm database file.
+        e_value_threshold: E-value threshold for HMMER hits.
+        cpu: Number of CPU threads to use.
+        temp_dir: Directory for temporary files (created if None).
+        
+    Returns:
+        Dictionary mapping sequence IDs to lists of domain hits.
+    """
+    # Check if Pfam-A.hmm exists
+    if not os.path.exists(pfam_hmm_path):
+        logging.error(f"Pfam-A.hmm file not found at {pfam_hmm_path}")
+        return {}
+    
+    # Create a temp directory if not provided
+    if temp_dir is None:
+        temp_dir = tempfile.mkdtemp()
+    else:
+        os.makedirs(temp_dir, exist_ok=True)
+    
+    # Create a temporary FASTA file with the sequences
+    temp_fasta = os.path.join(temp_dir, "temp_sequences.fasta")
+    
+    try:
+        # Write sequences to temporary FASTA file
+        with open(temp_fasta, 'w') as f:
+            for seq_id, sequence in sequences.items():
+                f.write(f">{seq_id}\n{sequence}\n")
+        
+        # Run hmmscan against Pfam-A.hmm
+        output_prefix = os.path.join(temp_dir, "pfam_scan")
+        domtblout_file = run_hmmscan(pfam_hmm_path, temp_fasta, output_prefix, e_value_threshold, cpu)
+        
+        if not domtblout_file or not os.path.exists(domtblout_file):
+            logging.error("hmmscan against Pfam-A.hmm failed")
+            return {}
+        
+        # Parse the domtblout file
+        hits_by_protein = parse_hmmscan_domtblout(domtblout_file, e_value_threshold)
+        
+        # Process domain hits to identify specific domains of interest
+        processed_hits = {}
+        
+        # Define domain mappings for NRPS domains (Pfam domains known to be associated with NRPS)
+        domain_mappings = {
+            "Condensation": "C",
+            "AMP-binding": "A",
+            "PP-binding": "T",
+            "Thioesterase": "TE",
+            "Epimerase": "E",
+            "Methyltransf_11": "MT", 
+            "NMT": "MT",  # N-methyltransferase
+            "Thioesterase": "TE",
+            "Formyl_trans_N": "F",
+            "Formyl_trans_C": "F",
+            "Reductase_2": "R",
+            "Reductase_3": "R",
+            "PKS_AT": "AT"
+        }
+        
+        # Process hits to identify domain types
+        for protein_id, hits in hits_by_protein.items():
+            processed_hits[protein_id] = []
+            
+            for hit in hits:
+                domain_id = hit['domain_id']
+                domain_type = None
+                
+                # Try direct mapping first
+                for pfam_name, domain_code in domain_mappings.items():
+                    if pfam_name.lower() in domain_id.lower():
+                        domain_type = domain_code
+                        break
+                
+                # Add to processed hits with identified domain type if found
+                if domain_type:
+                    processed_hits[protein_id].append({
+                        'domain_type': domain_type,
+                        'domain_id': domain_id,
+                        'start': hit['start'],
+                        'end': hit['end'],
+                        'e_value': hit['e_value']
+                    })
+        
+        logging.info(f"Validated {len(processed_hits)} sequences against Pfam-A.hmm")
+        return processed_hits
+        
+    except Exception as e:
+        logging.error(f"Error validating sequences against Pfam-A.hmm: {e}")
+        return {}
+    
+    finally:
+        # Clean up temporary files
+        if os.path.exists(temp_fasta):
+            os.remove(temp_fasta)
 
 def validate_cat_order(domain_hits: List[Dict[str, Any]], max_gap_allowed: int) -> Tuple[bool, Optional[Tuple[int, int]]]:
     """

@@ -4,6 +4,7 @@
 paths:
   seed_proteins: data/seed_proteins.txt
   uniref90: "" # To be provided via command line
+  pfam_hmm: "Pfam-A.hmm" # Path to Pfam-A.hmm database for domain validation
   pfam_hmms: data/pfam_hmms
   output_dir: results
   temp_dir: tmp

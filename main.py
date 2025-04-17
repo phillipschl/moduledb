@@ -24,7 +24,8 @@ from scripts.data_acquisition import (
 from scripts.validation import (
     validate_cat_order, 
     parse_hmmscan_domtblout, 
-    extract_cat_module_sequences
+    extract_cat_module_sequences,
+    validate_domains_with_pfam
 )
 from scripts.alignment import (
     run_mafft_alignment, 
@@ -85,6 +86,7 @@ def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="NRPS C-A-T Module Sequence Database Generation Pipeline")
     
     parser.add_argument("--uniref90", required=True, help="Path to the UniRef90 database FASTA file")
+    parser.add_argument("--pfam_hmm", help="Path to the Pfam-A.hmm database file for domain validation")
     parser.add_argument("--config", default="config.yaml", help="Path to the configuration file")
     parser.add_argument("--seed_proteins", help="Path to a file containing seed UniProt IDs (overrides config)")
     parser.add_argument("--output_dir", help="Directory to store results (overrides config)")
@@ -135,6 +137,10 @@ def update_config_with_args(config: dict, args: argparse.Namespace) -> dict:
     """
     # Update UniRef90 path
     config['paths']['uniref90'] = args.uniref90
+    
+    # Update Pfam-A.hmm path if specified
+    if args.pfam_hmm:
+        config['paths']['pfam_hmm'] = args.pfam_hmm
     
     # Update seed proteins path if specified
     if args.seed_proteins:
@@ -477,6 +483,44 @@ def run_phase3(config: dict, domtblout_file: str) -> tuple:
         
         # Extract valid C-A-T modules
         validated_modules = extract_cat_module_sequences(hits_by_protein, sequences_by_id, max_gap_allowed)
+        
+        # If Pfam-A.hmm path is provided, perform additional validation
+        if 'pfam_hmm' in config['paths'] and os.path.exists(config['paths']['pfam_hmm']):
+            logging.info(f"Performing additional domain validation using Pfam-A.hmm: {config['paths']['pfam_hmm']}")
+            
+            # Run Pfam validation on the extracted modules
+            pfam_hits = validate_domains_with_pfam(
+                validated_modules,
+                config['paths']['pfam_hmm'],
+                e_value_threshold=config['parameters']['hmmer_evalue'],
+                cpu=thread_count,
+                temp_dir=temp_dir
+            )
+            
+            # Filter modules that don't have valid C-A-T domains according to Pfam
+            pfam_validated_modules = {}
+            for module_id, sequence in validated_modules.items():
+                if module_id in pfam_hits:
+                    domain_hits = pfam_hits[module_id]
+                    
+                    # Check if module has C, A, and T domains
+                    domain_types = [hit['domain_type'] for hit in domain_hits]
+                    if 'C' in domain_types and 'A' in domain_types and 'T' in domain_types:
+                        pfam_validated_modules[module_id] = sequence
+                        logging.debug(f"Pfam validation passed for {module_id}: found C-A-T domains")
+                    else:
+                        logging.debug(f"Pfam validation failed for {module_id}: missing required domains. Found: {domain_types}")
+            
+            # Log validation statistics
+            original_count = len(validated_modules)
+            pfam_count = len(pfam_validated_modules)
+            
+            if original_count > 0:
+                validation_rate = pfam_count / original_count * 100
+                logging.info(f"Pfam validation: {pfam_count}/{original_count} modules passed ({validation_rate:.1f}%)")
+                
+                # Use the Pfam-validated modules
+                validated_modules = pfam_validated_modules
         
         # Log extraction statistics
         module_count = len(validated_modules)
