@@ -1,0 +1,49 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Data files (optional, uncomment if needed)
+# *.fasta
+# *.fa
+
+# Log files
+logs/
+*.log
+
+# Temporary files
+tmp/
+temp/
+
+# Large output files
+results/
+!results/.gitkeep
+
+# UniRef database (very large)
+uniref90.fasta
+*.hmm
+*.hmm.h3*
+*.sto
+
+# Editor-specific files
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS-specific files
+.DS_Store
+Thumbs.db 

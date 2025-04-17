@@ -1,0 +1,19 @@
+name: moduledb
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - python=3.9
+  - biopython
+  - pandas
+  - requests
+  - pytest
+  - pyyaml
+  - networkx
+  - matplotlib
+  - seaborn
+  - hmmer=3.3
+  - mmseqs2
+  - clustalo
+  - mafft 

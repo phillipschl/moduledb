@@ -1,0 +1,14 @@
+# List of well-characterized NRPS proteins with C-A-T modules
+# Format: UniProtKB ID [tab] Organism [tab] Description
+P0C061	Brevibacillus brevis	Gramicidin S synthase 1
+P0C064	Brevibacillus brevis	Gramicidin S synthase 2
+P39135	Bacillus subtilis	Surfactin synthetase subunit 1 (SrfA-A)
+P27206	Bacillus subtilis	Surfactin synthetase subunit 2 (SrfA-B)
+Q08787	Bacillus subtilis	Surfactin synthetase subunit 3 (SrfA-C)
+P09095	Brevibacillus parabrevis	Tyrocidine synthase 1 (TycA)
+O30408	Brevibacillus parabrevis	Tyrocidine synthase 2 (TycB)
+O30409	Brevibacillus parabrevis	Tyrocidine synthase 3 (TycC)
+Q51338	Pseudomonas aeruginosa	Pyoverdine synthetase D (PvdD)
+Q9I182	Pseudomonas aeruginosa	Pyoverdine synthetase J (PvdJ)
+Q4WAY8	Aspergillus fumigatus	Nonribosomal peptide synthetase 14 (NRPS14)
+Q9X839	Streptomyces coelicolor	Calcium-dependent antibiotic peptide synthetase (CdaPS) 

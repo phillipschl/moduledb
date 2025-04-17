@@ -1,0 +1,25 @@
+# NRPS C-A-T Module Database Configuration
+
+# Paths
+paths:
+  seed_proteins: data/seed_proteins.txt
+  uniref90: "" # To be provided via command line
+  pfam_hmms: data/pfam_hmms
+  output_dir: results
+  temp_dir: tmp
+  log_dir: logs
+
+# Domain Pfam IDs
+domain_pfams:
+  C_domain: PF00668.25
+  A_domain: PF00501.34
+  T_domain: PF00550.31
+
+# Thresholds and Parameters
+parameters:
+  max_gap_allowed: 100 # Maximum amino acid gap between consecutive domains (increased from 50)
+  hmmer_evalue: 1e-10 # E-value threshold for HMMER hits
+  cluster_min_seq_id: 0.7 # Minimum sequence identity for clustering
+  cluster_cov: 0.8 # Coverage threshold for clustering
+  cluster_cov_mode: 0 # Coverage mode for clustering (0: bidirectional)
+  threads: 4 # Number of CPU threads to use 
