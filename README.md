@@ -24,7 +24,92 @@ cd moduledb
 # Create and activate the conda environment
 conda env create -f environment.yml
 conda activate moduledb
+
+# Install additional performance tools (optional but recommended)
+bash install.sh
 ```
+
+## Performance Optimization
+
+The pipeline includes several optimizations for handling large datasets:
+
+1. **FASTA Index**: The pipeline automatically creates and uses FASTA index files (`.fai`) for faster sequence retrieval
+2. **SeqKit Integration**: Uses the ultra-fast SeqKit tool for sequence extraction with automatic index detection
+3. **Parallel Processing**: Processes large sequence sets using multiple CPU cores
+4. **Ripgrep Support**: Uses ripgrep instead of grep for faster text searching when available
+5. **Chunked Processing**: Processes large datasets in optimally sized chunks
+6. **Optimized UniRef90 Handling**: Automatically detects UniRef90 databases and uses specialized retrieval methods that work directly with UniRef90 prefixes for optimal performance
+7. **SeqKit Version Compatibility**: Automatically detects seqkit capabilities and adapts to work with all versions
+
+To maximize performance:
+
+- Install optional tools via `install.sh`
+- Increase the thread count in `config.yaml` based on your system's capabilities
+- For very large jobs, pre-index the UniRef90 database: `seqkit faidx uniref90.fasta`
+- For systems with limited RAM, reduce the chunk size parameter in `main.py`
+
+### SeqKit Usage Notes
+
+The pipeline works with all versions of SeqKit and uses the `faidx` command to create and use FASTA index files:
+
+- When processing UniRef90 databases, the pipeline automatically creates a `.fai` index file if one doesn't exist
+- Once indexed, subsequent retrieval operations are significantly faster
+- For large databases (like your 90GB UniRef90), indexed retrieval can be 10-100x faster than direct parsing
+
+To manually pre-index your database for even faster startup:
+```bash
+# Create FASTA index
+seqkit faidx uniref90.fasta
+
+# Verify index was created
+ls -la uniref90.fasta.fai
+```
+
+The pipeline uses `seqkit grep -f ids.txt uniref90.fasta -p -n -j 4` for efficient sequence retrieval, which:
+- `-f ids.txt`: Reads IDs from a file
+- `-p`: Enables pattern matching (handles variations in FASTA headers)
+- `-n`: Only searches in sequence names/headers (not in sequences)
+- `-j 4`: Uses 4 threads for parallel processing
+
+If you encounter any errors with seqkit commands, the pipeline will automatically fall back to alternative retrieval methods.
+
+## Troubleshooting
+
+### Sequence Retrieval Issues
+
+If you encounter problems with sequence retrieval (e.g., "Retrieved 0 sequences from UniRef90"), try the following:
+
+1. **Check the retrieval method**: In `config.yaml`, set `retrieval_method` to one of:
+   - `"direct"`: Uses Bio.SeqIO to parse the entire FASTA file directly (best for files <10GB)
+   - `"chunked"`: Uses the chunked approach with multiple processes (default for larger files)
+   - `"fallback"`: Uses a simple grep-based approach as a last resort
+   - `"auto"`: Automatically selects the best method based on file size (default)
+
+2. **Adjust memory settings**: For large FASTA files, adjust the `available_memory_gb` parameter in `config.yaml` to match your system's available RAM.
+
+3. **Manual batch size**: Set `batch_size_override` in `config.yaml` to a smaller number (e.g., 500) if you're experiencing memory issues.
+
+4. **Check file formats**: Ensure your UniRef90 FASTA file is properly formatted with '>' characters at the start of each header line.
+
+5. **Pre-index your database**: Run `seqkit faidx uniref90.fasta` before running the pipeline to create an index file.
+
+6. **Check for specific errors**: Examine the log file in the `logs/` directory for specific error messages.
+
+Example configuration for difficult retrieval cases:
+```yaml
+parameters:
+  threads: 8
+  available_memory_gb: 12
+  retrieval_method: "direct"  # Use direct method for problematic files
+  batch_size_override: 500    # Use smaller batches if memory is limited
+```
+
+### UniRef90 Annotation Feature
+
+The pipeline now automatically detects and annotates UniRef90 sequence identifiers:
+- For sequences with `UniRef90_` prefix, annotations are fetched from the UniRef API
+- The pipeline also provides a dedicated `fetch_uniref90_cluster_info()` function for retrieving detailed cluster information
+- If UniRef90 annotation fails, the pipeline falls back to standard UniProt annotation
 
 ## Usage
 
@@ -136,6 +221,8 @@ python main.py --uniref90 uniref90.fasta \
 4. **Annotation**
    - Annotate modules with metadata
    - Generate annotation file
+   - **Enhanced UniRef90 Support**: Automatically retrieves annotations for UniRef90 identifiers using the UniRef API
+   - Provides detailed cluster information including taxonomy distribution and representative members
 
 5. **Clustering and Network Visualization**
    - Cluster modules by sequence similarity
@@ -193,6 +280,12 @@ The pipeline generates several output files:
 3. **Errors with UniProt queries when using FASTA sequences as input**
    - Use the `--use_custom_seed` flag to bypass UniProt queries
    - Make sure to specify `--start_phase 2` to skip phase 1
+
+4. **UniRef90 Annotation Feature**
+   - The pipeline now automatically detects and annotates UniRef90 sequence identifiers
+   - For sequences with `UniRef90_` prefix, annotations are fetched from the UniRef API
+   - The pipeline also provides a dedicated `fetch_uniref90_cluster_info()` function for retrieving detailed cluster information
+   - If UniRef90 annotation fails, the pipeline falls back to standard UniProt annotation
 
 ## License
 

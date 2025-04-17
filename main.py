@@ -10,6 +10,7 @@ import logging
 import yaml
 import time
 from pathlib import Path
+import subprocess
 
 # Import pipeline modules
 from scripts.setup import setup_environment
@@ -244,60 +245,290 @@ def run_phase3(config: dict, domtblout_file: str) -> tuple:
     e_value_threshold = float(config['parameters']['hmmer_evalue'])
     hits_by_protein = parse_hmmscan_domtblout(domtblout_file, e_value_threshold)
     
-    logging.info(f"Parsed {len(hits_by_protein)} protein hits from HMMER results")
+    # Count total hits and proteins with multiple hits
+    total_proteins = len(hits_by_protein)
+    total_hits = sum(len(hits) for hits in hits_by_protein.values())
+    multi_hit_proteins = sum(1 for hits in hits_by_protein.values() if len(hits) > 1)
+    
+    logging.info(f"Parsed {total_hits} hits across {total_proteins} proteins from HMMER results")
+    logging.info(f"Found {multi_hit_proteins} proteins with multiple hits ({multi_hit_proteins/total_proteins*100:.1f}%)")
     
     # Create a directory for temporary files
-    temp_dir = config['paths']['temp_dir']
+    temp_dir = os.path.join(config['paths']['temp_dir'], f"phase3_{int(time.time())}")
     os.makedirs(temp_dir, exist_ok=True)
     
-    # Get all protein IDs that need sequences
-    protein_ids = list(hits_by_protein.keys())
-    logging.info(f"Retrieving sequences for {len(protein_ids)} proteins from UniRef90")
-    
-    # Retrieve sequences from the UniRef90 database
-    uniref90_file = config['paths']['uniref90']
-    
-    # Check if UniRef90 file exists
-    if not os.path.exists(uniref90_file):
-        logging.error(f"UniRef90 FASTA file not found: {uniref90_file}")
-        raise FileNotFoundError(f"UniRef90 FASTA file not found: {uniref90_file}")
-    
-    # Get sequences for all protein IDs
-    sequences_by_id = retrieve_sequences_from_fasta(
-        protein_ids, 
-        uniref90_file,
-        chunk_size=100,  # Smaller chunks to avoid memory issues
-        temp_dir=temp_dir
-    )
-    
-    logging.info(f"Retrieved {len(sequences_by_id)} sequences from UniRef90")
-    
-    # Extract valid C-A-T modules
+    # Initialize variables
+    sequences_by_id = {}
     max_gap_allowed = config['parameters']['max_gap_allowed']
-    validated_modules = extract_cat_module_sequences(hits_by_protein, sequences_by_id, max_gap_allowed)
+    validated_modules = {}
+    filtered_validated_fasta = None
+    final_fasta = None
     
-    logging.info(f"Extracted {len(validated_modules)} validated C-A-T modules")
-    
-    # Save validated modules to FASTA
-    filtered_validated_fasta = os.path.join(config['paths']['output_dir'], "filtered_validated_cat_modules.fasta")
-    save_sequences_to_fasta(validated_modules, filtered_validated_fasta)
-    
-    assert os.path.exists(filtered_validated_fasta), "Filtered validated modules FASTA file not created"
-    
-    # Remove redundancy
-    final_fasta = os.path.join(config['paths']['output_dir'], "final_cat_modules.fasta")
-    success = remove_redundancy(
-        filtered_validated_fasta,
-        final_fasta,
-        temp_dir,
-        min_seq_id=0.99,
-        threads=config['parameters']['threads']
-    )
-    
-    assert success, "Redundancy removal failed"
-    assert os.path.exists(final_fasta), "Final modules FASTA file not created"
-    
-    logging.info(f"Phase 3 completed successfully, results in {final_fasta}")
+    try:
+        # Get all protein IDs that need sequences
+        protein_ids = list(hits_by_protein.keys())
+        logging.info(f"Retrieving sequences for {len(protein_ids)} proteins from UniRef90")
+        
+        # Set batch size based on available memory
+        available_mem_gb = config['parameters'].get('available_memory_gb', 8)
+        batch_size = min(10000, max(1000, int(available_mem_gb * 1000)))
+        if config['parameters'].get('batch_size_override'):
+            batch_size = config['parameters']['batch_size_override']
+            logging.info(f"Using manually overridden batch size of {batch_size}")
+        else:
+            logging.info(f"Using batch size of {batch_size} sequences based on available memory")
+        
+        # Optimize thread count based on system resources
+        thread_count = config['parameters'].get('threads', 4)
+        if thread_count > 8 and total_proteins > 10000:
+            # For very large datasets with many cores, limit threads to avoid I/O bottlenecks
+            effective_threads = min(thread_count, 12)
+            if effective_threads != thread_count:
+                logging.info(f"Limiting thread count from {thread_count} to {effective_threads} for optimal I/O performance")
+                thread_count = effective_threads
+        
+        # Retrieve sequences from the UniRef90 database
+        uniref90_file = config['paths']['uniref90']
+        
+        # Check if UniRef90 file exists
+        if not os.path.exists(uniref90_file):
+            logging.error(f"UniRef90 FASTA file not found: {uniref90_file}")
+            raise FileNotFoundError(f"UniRef90 FASTA file not found: {uniref90_file}")
+        
+        # Log the file size before retrieval to estimate memory requirements
+        file_size_gb = os.path.getsize(uniref90_file) / (1024**3)
+        logging.info(f"UniRef90 file size: {file_size_gb:.2f} GB")
+        
+        # Choose retrieval method based on config
+        retrieval_method = config['parameters'].get('retrieval_method', 'auto')
+        
+        if retrieval_method == 'direct' or (retrieval_method == 'auto' and file_size_gb < 10):
+            # For smaller files, just use Bio.SeqIO to parse directly - simpler but uses more memory
+            logging.info(f"Using direct Bio.SeqIO parsing for the FASTA file (size: {file_size_gb:.2f}GB)")
+            try:
+                from Bio import SeqIO
+                import io
+                
+                # Create pattern for faster ID matching
+                logging.info("Creating ID lookup patterns for direct matching")
+                id_patterns = {}
+                for pid in protein_ids:
+                    id_patterns[pid] = True
+                    if pid.startswith('UniRef90_'):
+                        id_patterns[pid[9:]] = True
+                    else:
+                        id_patterns[f"UniRef90_{pid}"] = True
+                
+                # Parse FASTA file in chunks to avoid memory issues
+                logging.info("Starting direct FASTA parsing")
+                seq_count = 0
+                with open(uniref90_file, 'r') as fasta_handle:
+                    batch = []
+                    for record in SeqIO.parse(fasta_handle, "fasta"):
+                        # Check if this ID matches any of our target patterns
+                        record_id = record.id
+                        base_id = record_id.split('|')[0] if '|' in record_id else record_id
+                        
+                        if record_id in id_patterns or base_id in id_patterns:
+                            # Store with original ID
+                            sequences_by_id[record_id] = str(record.seq)
+                            
+                            # Also store with base ID if different
+                            if base_id != record_id:
+                                sequences_by_id[base_id] = str(record.seq)
+                            
+                            # Handle UniRef90 prefix variants
+                            if record_id.startswith('UniRef90_'):
+                                sequences_by_id[record_id[9:]] = str(record.seq)
+                            else:
+                                sequences_by_id[f"UniRef90_{record_id}"] = str(record.seq)
+                            
+                            seq_count += 1
+                            if seq_count % 1000 == 0:
+                                logging.info(f"Parsed {seq_count} matching sequences so far")
+                
+                logging.info(f"Direct parsing completed - found {len(sequences_by_id)} sequences")
+                
+            except Exception as e:
+                logging.error(f"Direct parsing failed: {e}")
+                logging.info("Falling back to chunked retrieval")
+                # Clear any partial results
+                sequences_by_id = {}
+                
+                # Process in optimally sized batches if the dataset is very large
+                if total_proteins > 50000:
+                    logging.info(f"Large protein set ({total_proteins} IDs) - processing in batches")
+                    
+                    for i in range(0, len(protein_ids), batch_size):
+                        batch_ids = protein_ids[i:i+batch_size]
+                        logging.info(f"Processing batch {i//batch_size + 1}/{(len(protein_ids)-1)//batch_size + 1} ({len(batch_ids)} IDs)")
+                        
+                        batch_sequences = retrieve_sequences_from_fasta(
+                            batch_ids, 
+                            uniref90_file,
+                            chunk_size=1000,
+                            temp_dir=temp_dir,
+                            num_processes=thread_count
+                        )
+                        
+                        # Update sequence dictionary and log stats
+                        prev_size = len(sequences_by_id)
+                        sequences_by_id.update(batch_sequences)
+                        logging.info(f"Batch added {len(sequences_by_id) - prev_size} new sequences (total: {len(sequences_by_id)})")
+                        
+                        # Free memory after each batch
+                        batch_sequences = None
+                        import gc
+                        gc.collect()
+                else:
+                    # Get sequences for all protein IDs at once if the dataset is smaller
+                    sequences_by_id = retrieve_sequences_from_fasta(
+                        protein_ids, 
+                        uniref90_file,
+                        chunk_size=1000,
+                        temp_dir=temp_dir,
+                        num_processes=thread_count
+                    )
+        
+        else:
+            # Process in optimally sized batches if the dataset is very large
+            if total_proteins > 50000:
+                logging.info(f"Large protein set ({total_proteins} IDs) - processing in batches")
+                
+                for i in range(0, len(protein_ids), batch_size):
+                    batch_ids = protein_ids[i:i+batch_size]
+                    logging.info(f"Processing batch {i//batch_size + 1}/{(len(protein_ids)-1)//batch_size + 1} ({len(batch_ids)} IDs)")
+                    
+                    batch_sequences = retrieve_sequences_from_fasta(
+                        batch_ids, 
+                        uniref90_file,
+                        chunk_size=1000,
+                        temp_dir=temp_dir,
+                        num_processes=thread_count
+                    )
+                    
+                    # Update sequence dictionary and log stats
+                    prev_size = len(sequences_by_id)
+                    sequences_by_id.update(batch_sequences)
+                    logging.info(f"Batch added {len(sequences_by_id) - prev_size} new sequences (total: {len(sequences_by_id)})")
+                    
+                    # Free memory after each batch
+                    batch_sequences = None
+                    import gc
+                    gc.collect()
+            else:
+                # Get sequences for all protein IDs at once if the dataset is smaller
+                sequences_by_id = retrieve_sequences_from_fasta(
+                    protein_ids, 
+                    uniref90_file,
+                    chunk_size=1000,
+                    temp_dir=temp_dir,
+                    num_processes=thread_count
+                )
+        
+        # If we still have no sequences, try fallback method one last time
+        if len(sequences_by_id) == 0:
+            logging.warning("All retrieval methods failed. Trying basic fallback method...")
+            try:
+                # Basic retrieval with grep as a last resort
+                sequences_by_id = {}
+                for i in range(0, len(protein_ids), 100):
+                    chunk = protein_ids[i:i+100]
+                    for pid in chunk:
+                        pattern = f"grep -A 1 -m 1 '{pid}' {uniref90_file} || true"
+                        try:
+                            result = subprocess.run(pattern, shell=True, stdout=subprocess.PIPE, text=True)
+                            lines = result.stdout.strip().split('\n')
+                            if len(lines) >= 2 and lines[0].startswith('>'):
+                                header = lines[0]
+                                seq = lines[1]
+                                sequences_by_id[pid] = seq
+                        except Exception as e:
+                            logging.error(f"Error retrieving sequence {pid}: {e}")
+                    
+                    if i % 1000 == 0:
+                        logging.info(f"Fallback retrieved {len(sequences_by_id)} sequences so far")
+                
+                logging.info(f"Fallback retrieval completed - found {len(sequences_by_id)} sequences")
+            except Exception as e:
+                logging.error(f"Fallback retrieval failed: {e}")
+        
+        # Log retrieval statistics
+        missing_sequences = [pid for pid in protein_ids if pid not in sequences_by_id]
+        missing_count = len(missing_sequences)
+        if missing_count > 0:
+            missing_percent = missing_count / len(protein_ids) * 100
+            logging.warning(f"Unable to retrieve {missing_count} sequences ({missing_percent:.1f}%)")
+            if missing_count < 10:
+                logging.warning(f"Missing IDs: {', '.join(missing_sequences)}")
+            elif config.get('log_level', 'INFO').upper() == 'DEBUG':
+                missing_file = os.path.join(temp_dir, "missing_sequences.txt")
+                with open(missing_file, 'w') as f:
+                    for pid in missing_sequences:
+                        f.write(f"{pid}\n")
+                logging.debug(f"List of missing sequences saved to {missing_file}")
+        
+        if len(sequences_by_id) == 0:
+            logging.error("Failed to retrieve any sequences. Check UniRef90 file format and protein IDs.")
+            raise RuntimeError("No sequences retrieved after multiple attempts. Cannot proceed.")
+        
+        # Process hits to extract valid modules
+        logging.info(f"Extracting valid C-A-T modules from {len(sequences_by_id)} sequences")
+        
+        # Extract valid C-A-T modules
+        validated_modules = extract_cat_module_sequences(hits_by_protein, sequences_by_id, max_gap_allowed)
+        
+        # Log extraction statistics
+        module_count = len(validated_modules)
+        hits_with_sequences = sum(1 for pid in hits_by_protein if pid in sequences_by_id)
+        success_rate = module_count / hits_with_sequences * 100 if hits_with_sequences > 0 else 0
+        
+        logging.info(f"Extracted {module_count} validated C-A-T modules from {hits_with_sequences} proteins with sequences")
+        logging.info(f"Extraction success rate: {success_rate:.1f}%")
+        
+        # Save validated modules to FASTA
+        filtered_validated_fasta = os.path.join(config['paths']['output_dir'], "filtered_validated_cat_modules.fasta")
+        save_sequences_to_fasta(validated_modules, filtered_validated_fasta)
+        
+        assert os.path.exists(filtered_validated_fasta), "Filtered validated modules FASTA file not created"
+        
+        # Remove redundancy with optimized settings
+        final_fasta = os.path.join(config['paths']['output_dir'], "final_cat_modules.fasta")
+        success = remove_redundancy(
+            filtered_validated_fasta,
+            final_fasta,
+            temp_dir,
+            min_seq_id=0.99,
+            threads=thread_count
+        )
+        
+        assert success, "Redundancy removal failed"
+        assert os.path.exists(final_fasta), "Final modules FASTA file not created"
+        
+        # Count sequences in final FASTA
+        from Bio import SeqIO
+        final_count = sum(1 for _ in SeqIO.parse(final_fasta, "fasta"))
+        redundant_count = module_count - final_count
+        redundant_percent = redundant_count / module_count * 100 if module_count > 0 else 0
+        
+        logging.info(f"Removed {redundant_count} redundant sequences ({redundant_percent:.1f}%)")
+        logging.info(f"Final database contains {final_count} unique C-A-T modules")
+        
+        logging.info(f"Phase 3 completed successfully, results in {final_fasta}")
+        
+    except Exception as e:
+        logging.exception(f"Phase 3 failed: {e}")
+        raise
+        
+    finally:
+        # Clean up temporary directory if requested in config
+        if config.get('parameters', {}).get('cleanup_temp', True):
+            import shutil
+            logging.info(f"Cleaning up temporary directory: {temp_dir}")
+            try:
+                shutil.rmtree(temp_dir)
+            except Exception as e:
+                logging.warning(f"Failed to clean up temporary directory: {e}")
     
     return filtered_validated_fasta, final_fasta
 

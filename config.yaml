@@ -23,3 +23,8 @@ parameters:
   cluster_cov: 0.8 # Coverage threshold for clustering
   cluster_cov_mode: 0 # Coverage mode for clustering (0: bidirectional)
   threads: 4 # Number of CPU threads to use 
+  available_memory_gb: 8 # Estimated available RAM in GB for memory-sensitive operations
+  cleanup_temp: true # Whether to clean up temporary files after each phase
+  batch_size_override: null # Optional override for batch size in sequence retrieval (null = auto)
+  retrieval_method: "auto" # Sequence retrieval method: "auto", "direct", "chunked", or "fallback" 
+                           # For UniRef90 databases, the pipeline will automatically use optimized UniRef90-specific retrieval 
